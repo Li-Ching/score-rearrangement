@@ -134,6 +134,7 @@ Score pairs are trained **bidirectionally** (easier→harder and harder→easier
 - Scan all token files to collect unique tokens
 - Add special tokens: `<pad>`, `<sos>`, `<eos>`, `Lv.1`, `Lv.2`, `Lv.3`, `Lv.4`
 - Save `vocab.json` (token → index mapping)
+- Token strings need to encode to indexs for feeding to model
 - **Status: DONE**
 
 ---
