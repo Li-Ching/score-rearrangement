@@ -4,8 +4,8 @@ import glob
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 # TODO: change these to match your own environment
-TOKENS_DIR  = "./tokens"
-OUTPUT_PATH = "./data/vocab.json"
+TOKENS_DIR  = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\tokens"
+OUTPUT_PATH = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\data\vocab.json"
 
 # ── Special tokens ────────────────────────────────────────────────────────────
 # Order matters: padding must be index 0 so PyTorch's default ignore_index works.

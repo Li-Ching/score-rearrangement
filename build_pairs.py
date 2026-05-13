@@ -2,9 +2,9 @@ import os, json, csv, random
 from itertools import combinations
 from collections import defaultdict
 
-CSV_PATH    = "/Users/yan/Documents/GitHub/score-rearrangement/PDMX.csv"
-TOKENS_DIR  = "/Users/yan/Documents/GitHub/score-rearrangement/tokens"
-OUTPUT_PATH = "/Users/yan/Documents/GitHub/score-rearrangement/data/pairs.jsonl"
+CSV_PATH    = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\PDMX.csv"
+TOKENS_DIR  = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\tokens"
+OUTPUT_PATH = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\data\pairs.jsonl"
 
 SEG_MIN       = 4    # min bars per segment
 SEG_MAX       = 8    # max bars per segment
@@ -132,7 +132,7 @@ def main():
     print("Loading CSV and matching to token files...")
     song_to_scores = defaultdict(list)  # song_name -> [token_path, ...]
 
-    with open(CSV_PATH) as f:
+    with open(CSV_PATH, encoding='utf-8') as f:
         for row in csv.DictReader(f):
             tracks = row['tracks'].strip()
             song   = row['song_name'].strip()
