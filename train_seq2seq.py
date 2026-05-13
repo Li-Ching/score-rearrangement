@@ -58,17 +58,26 @@ def train_epoch(
     vocab_size: int,
     grad_clip: float,
     label_smoothing: float,
+    accum_steps: int = 1,
 ) -> float:
-    """Run one full training pass. Returns mean per-token loss."""
+    """
+    Run one full training pass with optional gradient accumulation.
+
+    accum_steps: number of micro-batches to accumulate before an optimizer
+                 step. Effective batch size = batch_size × accum_steps.
+    Returns mean per-token cross-entropy loss over the epoch.
+    """
     model.train()
     total_loss   = 0.0
     total_tokens = 0
 
+    optimizer.zero_grad()
     pbar = tqdm(loader, desc='  train', leave=False, unit='batch')
-    for src, tgt_in, tgt_out, src_mask, tgt_mask in pbar:
-        src     = src.to(device)
-        tgt_in  = tgt_in.to(device)
-        tgt_out = tgt_out.to(device)
+
+    for micro_step, (src, tgt_in, tgt_out, src_mask, tgt_mask) in enumerate(pbar):
+        src      = src.to(device)
+        tgt_in   = tgt_in.to(device)
+        tgt_out  = tgt_out.to(device)
         src_mask = src_mask.to(device)
         tgt_mask = tgt_mask.to(device)
 
@@ -83,16 +92,21 @@ def train_epoch(
         )
         n_tokens = (tgt_out != pad_id).sum().item()
 
-        optimizer.zero_grad()
-        (loss / n_tokens).backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        optimizer.step()
-        scheduler.step()
+        # Scale gradient so each micro-batch contributes 1/accum_steps
+        (loss / max(n_tokens, 1) / accum_steps).backward()
 
         total_loss   += loss.item()
         total_tokens += n_tokens
 
-        pbar.set_postfix(loss=f'{total_loss / total_tokens:.4f}',
+        # Optimizer step at the end of each accumulation cycle (or final batch)
+        is_last_batch = (micro_step + 1 == len(loader))
+        if (micro_step + 1) % accum_steps == 0 or is_last_batch:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+        pbar.set_postfix(loss=f'{total_loss / max(total_tokens, 1):.4f}',
                          lr=f'{optimizer.param_groups[0]["lr"]:.2e}')
 
     return total_loss / max(1, total_tokens)
@@ -180,9 +194,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--seed',       type=int,   default=42)
 
     # Training
-    p.add_argument('--epochs',     type=int,   default=100)
-    p.add_argument('--batch_size', type=int,   default=128)
-    p.add_argument('--no_augment', action='store_true',           help='disable pitch augmentation')
+    p.add_argument('--epochs',      type=int, default=100)
+    p.add_argument('--batch_size',  type=int, default=64,
+                   help='micro-batch size per GPU step')
+    p.add_argument('--accum_steps', type=int, default=4,
+                   help='gradient accumulation steps (effective_batch = batch_size × accum_steps)')
+    p.add_argument('--no_augment',  action='store_true', help='disable pitch augmentation')
 
     # Optimizer / LR
     p.add_argument('--lr',              type=float, default=1e-3,  help='peak learning rate')
@@ -238,9 +255,11 @@ def main() -> None:
     model = build_model(vocab_size, pad_id).to(device)
 
     # ── optimizer & scheduler ─────────────────────────────────────────────
-    optimizer   = torch.optim.Adam(model.parameters(), lr=args.lr)
-    total_steps = args.epochs * len(train_loader)
-    scheduler   = torch.optim.lr_scheduler.LambdaLR(
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # Optimizer steps per epoch = ceil(micro-batches / accum_steps)
+    opt_steps_per_epoch = math.ceil(len(train_loader) / args.accum_steps)
+    total_steps         = args.epochs * opt_steps_per_epoch
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         make_lr_lambda(args.warmup_steps, total_steps, args.lr, args.min_lr),
     )
@@ -262,7 +281,9 @@ def main() -> None:
     print(f'Parameters      : {model.count_parameters():,}')
     print(f'Vocab size      : {vocab_size}')
     print(f'Train pairs     : {len(train_ds):,}   Val pairs: {len(val_ds):,}')
-    print(f'Steps per epoch : {len(train_loader)}   Total steps: {total_steps}')
+    print(f'Micro-batch size: {args.batch_size}   Accum steps: {args.accum_steps}   '
+          f'Effective batch: {args.batch_size * args.accum_steps}')
+    print(f'Opt steps/epoch : {opt_steps_per_epoch}   Total opt steps: {total_steps}')
     print(f'Augmentation    : {augment}')
     print()
 
@@ -282,6 +303,7 @@ def main() -> None:
             train_loss = train_epoch(
                 model, train_loader, optimizer, scheduler, device,
                 pad_id, vocab_size, args.grad_clip, args.label_smoothing,
+                args.accum_steps,
             )
             val_loss = val_epoch(model, val_loader, device, pad_id, vocab_size)
 
