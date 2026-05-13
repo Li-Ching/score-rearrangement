@@ -200,7 +200,7 @@ greedy_decode() — batched greedy decoding used by infer.py later
     train_log.csv — append-only CSV with epoch, train loss, val loss, lr, elapsed time
 - Early stopping — stops after --patience consecutive epochs (default 10) with no val improvement
 - Resuming — --resume data/checkpoints/best.pt restores full state and continues from next epoch
-- **Status: DONE**
+- **Status: IN PROGRESS**
 
 ---
 
