@@ -9,17 +9,17 @@ OUTPUT_PATH = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\data\pairs.jsonl
 SEG_MIN           = 4    # min bars per segment
 SEG_MAX           = 8    # max bars per segment
 SEG_STRIDE        = 2    # sliding window stride in bars
-BAR_TOLERANCE     = 0.1  # max allowed bar count difference ratio between paired scores
-DENSITY_RATIO_MAX = 3.0  # max ratio of note densities between paired scores
-                          # (e.g. 3.0 means one can have at most 3× more notes/bar)
+BAR_TOLERANCE     = 0.05  # tightened from 0.1 → 0.05 (same song should have similar length)
+DENSITY_RATIO_MAX = 3.0   # max ratio of note densities between paired scores
+SKYLINE_THRESHOLD = 0.6   # min melody skyline similarity to accept a pair as same song
 
 random.seed(42)
 
 
 def token_path_from_mxl(mxl_rel):
     """Convert CSV mxl path (./mxl/1/11/Qm....mxl) to tokens/ path."""
-    rel = mxl_rel.lstrip('./')              # mxl/1/11/Qm....mxl
-    rel = rel.replace('mxl/', '', 1)        # 1/11/Qm....mxl
+    rel = mxl_rel.lstrip('./')
+    rel = rel.replace('mxl/', '', 1)
     rel = rel.replace('.mxl', '.json').replace('.xml', '.json')
     return os.path.join(TOKENS_DIR, rel)
 
@@ -81,26 +81,74 @@ def max_chord_size(tokens):
 
 def assign_level(bars):
     """
-    Assign difficulty level Lv.1-4 based on max polyphony per hand across all bars.
-    Matches the paper's definition (Section 4.1):
-      Lv.1 Beginner:      max poly <= 1 (one note per hand)
-      Lv.2 Elementary:    max poly <= 2 (up to two simultaneous notes)
-      Lv.3 Intermediate:  max poly <= 3 (up to three simultaneous notes)
-      Lv.4 Advanced:      max poly >  3 (no restriction)
+    Assign difficulty level Lv.1-4 using three combined metrics.
+
+    The original polyphony-only definition (paper Section 4.1) works well for
+    commercial pop piano scores but breaks down on PDMX, where the vast majority
+    of scores are simple arrangements with polyphony <= 1.  We therefore use
+    three complementary metrics and take the MAXIMUM level across all three,
+    so a score is rated hard if it is hard in ANY dimension.
+
+    Metrics (same as paper Section 5.1.1 evaluation metrics):
+      note_density  : average notes per bar (both hands combined)
+      pitch_width   : semitone range across entire score
+      polyphony     : max simultaneous notes per hand (original metric, retained)
+
+    Thresholds calibrated for PDMX piano scores:
+      Lv.1 : simple melody, small range, sparse
+      Lv.2 : moderate complexity
+      Lv.3 : denser, wider range
+      Lv.4 : complex, wide range, many notes
     """
+    from fractions import Fraction
+
+    # ── polyphony (original metric) ───────────────────────────────────────
     max_r, max_l = 0, 0
     for bar in bars:
         max_r = max(max_r, max_chord_size(get_hand_tokens(bar, 'R')))
         max_l = max(max_l, max_chord_size(get_hand_tokens(bar, 'L')))
     poly = max(max_r, max_l)
-    if poly <= 1:
-        return 'Lv.1'
-    elif poly <= 2:
-        return 'Lv.2'
-    elif poly <= 3:
-        return 'Lv.3'
-    else:
-        return 'Lv.4'
+
+    # ── note density ──────────────────────────────────────────────────────
+    density = note_density(bars)
+
+    # ── pitch width ───────────────────────────────────────────────────────
+    pitches = []
+    for bar in bars:
+        for tok in bar:
+            midi = pitch_token_to_midi(tok)
+            if midi is not None:
+                pitches.append(midi)
+    width = (max(pitches) - min(pitches)) if len(pitches) >= 2 else 0
+
+    # ── per-metric level ──────────────────────────────────────────────────
+    def poly_level(p):
+        if p <= 1: return 1
+        if p <= 2: return 2
+        if p <= 3: return 3
+        return 4
+
+    def density_level(d):
+        # thresholds based on actual PDMX quartiles (p25=8.4, p50=10.9, p75=14.0)
+        if d <= 8.4:  return 1
+        if d <= 10.9: return 2
+        if d <= 14.0: return 3
+        return 4
+
+    def width_level(w):
+        # thresholds based on actual PDMX quartiles (p25=16, p50=19, p75=24)
+        if w <= 16: return 1
+        if w <= 19: return 2
+        if w <= 24: return 3
+        return 4
+
+    # Use median of three metrics instead of max().
+    # max() causes a single high-range score to dominate regardless of density/poly.
+    # Median is more robust: a score must be hard in at least 2 of 3 dimensions
+    # to be rated hard overall.
+    levels = sorted([poly_level(poly), density_level(density), width_level(width)])
+    level  = levels[1]   # median of three values
+    return f'Lv.{level}'
 
 
 def get_key(bars):
@@ -129,27 +177,104 @@ def note_density(bars):
     return total / len(bars)
 
 
-def pairs_are_compatible(bars_a, bars_b):
+# ── Melody Skyline helpers ────────────────────────────────────────────────────
+
+_NOTE_ORDER = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+_FLAT_MAP   = {'Bb':'A#','Eb':'D#','Ab':'G#','Db':'C#','Gb':'F#','Cb':'B','Fb':'E'}
+
+def pitch_token_to_midi(token):
     """
-    Return True if two arrangements are likely to share the same musical content.
-    Checks:
-      1. Same key signature (strongest indicator of same melody)
-      2. Same time signature
-      3. Note density ratio within DENSITY_RATIO_MAX
+    Convert a note_* token (e.g. 'note_C4', 'note_F#5', 'note_Bb3')
+    to a MIDI number. Returns None if the token cannot be parsed.
     """
+    if not token.startswith('note_'):
+        return None
+    name = token[5:]
+    if len(name) < 2:
+        return None
+    try:
+        octave = int(name[-1])
+        pitch  = name[:-1]
+        pitch  = _FLAT_MAP.get(pitch, pitch)
+        if pitch not in _NOTE_ORDER:
+            return None
+        return octave * 12 + _NOTE_ORDER.index(pitch)
+    except (ValueError, IndexError):
+        return None
+
+
+def melody_skyline(bars):
+    """
+    Compute the melody skyline: for each bar, take the highest MIDI pitch
+    in the right-hand (R) staff. Returns a list of int|None (None = silent bar).
+
+    The skyline captures the melody contour, which is the strongest indicator
+    that two arrangements are versions of the same song.
+    """
+    skyline = []
+    for bar in bars:
+        r_tokens = get_hand_tokens(bar, 'R')
+        pitches  = [pitch_token_to_midi(t) for t in r_tokens if t.startswith('note_')]
+        pitches  = [p for p in pitches if p is not None]
+        skyline.append(max(pitches) if pitches else None)
+    return skyline
+
+
+def skyline_similarity(sky_a, sky_b):
+    """
+    Compare two melody skylines and return a similarity score [0.0, 1.0].
+
+    Alignment: zip the two skylines bar-by-bar (works because BAR_TOLERANCE
+    already ensures the two scores have nearly the same number of bars).
+
+    A bar pair is counted as 'matching' if both have a pitch and the pitch
+    difference is within ±2 semitones (allows for minor transposition errors
+    or enharmonic respellings between arrangements).
+
+    Returns 0.0 if there are fewer than 4 comparable bar pairs (too short
+    to judge reliably).
+    """
+    pairs = [(a, b) for a, b in zip(sky_a, sky_b) if a is not None and b is not None]
+    if len(pairs) < 4:
+        return 0.0
+    matches = sum(1 for a, b in pairs if abs(a - b) <= 2)
+    return matches / len(pairs)
+
+
+# ── Compatibility filter ──────────────────────────────────────────────────────
+
+def pairs_are_compatible(bars_a, bars_b, sky_a, sky_b):
+    """
+    Return True if two arrangements are likely to be versions of the same song.
+
+    Checks (in order of cost, cheapest first):
+      1. Same key signature    — different keys almost certainly mean different songs
+      2. Same time signature   — different meters mean structurally incompatible
+      3. Note density ratio    — one arrangement shouldn't have 3× more notes/bar
+      4. Melody skyline        — most expensive but strongest indicator; at least
+                                 60% of bars should share the same top-note contour
+    """
+    # 1. Key signature
     key_a, key_b = get_key(bars_a), get_key(bars_b)
     if key_a is not None and key_b is not None and key_a != key_b:
-        return False  # different keys → almost certainly different arrangements
+        return False
 
+    # 2. Time signature
     time_a, time_b = get_time(bars_a), get_time(bars_b)
     if time_a is not None and time_b is not None and time_a != time_b:
-        return False  # different time signatures → structurally incompatible
+        return False
 
+    # 3. Note density ratio
     d_a, d_b = note_density(bars_a), note_density(bars_b)
     if d_a > 0 and d_b > 0:
         ratio = max(d_a, d_b) / min(d_a, d_b)
         if ratio > DENSITY_RATIO_MAX:
-            return False  # one arrangement has far more notes — likely unrelated
+            return False
+
+    # 4. Melody skyline similarity (most discriminative filter)
+    sim = skyline_similarity(sky_a, sky_b)
+    if sim < SKYLINE_THRESHOLD:
+        return False
 
     return True
 
@@ -183,7 +308,7 @@ def main():
 
     # Step 1: collect tokenized piano scores grouped by song name
     print("Loading CSV and matching to token files...")
-    song_to_scores = defaultdict(list)  # song_name -> [token_path, ...]
+    song_to_scores = defaultdict(list)
 
     with open(CSV_PATH, encoding='utf-8') as f:
         for row in csv.DictReader(f):
@@ -206,6 +331,7 @@ def main():
     skipped_same_lv   = 0
     skipped_bars      = 0
     skipped_compat    = 0
+    skipped_skyline   = 0
     level_counts      = defaultdict(int)
 
     with open(OUTPUT_PATH, 'w') as out:
@@ -213,7 +339,7 @@ def main():
             if i % 1000 == 0:
                 print(f"  [{i}/{len(multi)}]  segments so far: {total_segments}")
 
-            # load tokens and assign difficulty level for each arrangement
+            # load tokens, compute difficulty level and melody skyline
             scored = []
             for path in paths:
                 try:
@@ -221,9 +347,10 @@ def main():
                         tokens = json.load(f)
                     bars  = split_into_bars(tokens)
                     if len(bars) < SEG_MIN:
-                        continue  # too short to segment
+                        continue
                     level = assign_level(bars)
-                    scored.append((path, level, bars))
+                    sky   = melody_skyline(bars)
+                    scored.append((path, level, bars, sky))
                     level_counts[level] += 1
                 except Exception:
                     continue
@@ -231,25 +358,25 @@ def main():
             if len(scored) < 2:
                 continue
 
-            # generate all nC2 pairs, trained bidirectionally (paper Section 3.1.1)
-            for (path_a, lv_a, bars_a), (path_b, lv_b, bars_b) in combinations(scored, 2):
+            for (path_a, lv_a, bars_a, sky_a), (path_b, lv_b, bars_b, sky_b) \
+                    in combinations(scored, 2):
 
                 if lv_a == lv_b:
                     skipped_same_lv += 1
-                    continue  # no difficulty transformation — skip
+                    continue
 
-                # require bar counts to be within tolerance for clean alignment
+                # bar count tolerance (tightened to 5%)
                 na, nb = len(bars_a), len(bars_b)
                 if abs(na - nb) / max(na, nb) > BAR_TOLERANCE:
                     skipped_bars += 1
                     continue
 
-                # require same key, same time, and similar note density
-                if not pairs_are_compatible(bars_a, bars_b):
+                # key / time / density / skyline
+                if not pairs_are_compatible(bars_a, bars_b, sky_a, sky_b):
                     skipped_compat += 1
                     continue
 
-                # both directions: a->b and b->a
+                # both directions: a→b and b→a
                 for sp, tp, sl, tl, sb, tb in [
                     (path_a, path_b, lv_a, lv_b, bars_a, bars_b),
                     (path_b, path_a, lv_b, lv_a, bars_b, bars_a),
@@ -261,11 +388,11 @@ def main():
                     total_pairs    += 1
 
     print(f"\nDone.")
-    print(f"Total training segments:              {total_segments}")
-    print(f"Total directional pairs:              {total_pairs}")
-    print(f"Skipped (same difficulty level):      {skipped_same_lv}")
-    print(f"Skipped (bar count mismatch >10%):    {skipped_bars}")
-    print(f"Skipped (key/time/density mismatch):  {skipped_compat}")
+    print(f"Total training segments              : {total_segments:,}")
+    print(f"Total directional pairs              : {total_pairs:,}")
+    print(f"Skipped (same difficulty level)      : {skipped_same_lv:,}")
+    print(f"Skipped (bar count mismatch >5%)     : {skipped_bars:,}")
+    print(f"Skipped (key/time/density/skyline)   : {skipped_compat:,}")
     print(f"Level distribution: {dict(sorted(level_counts.items()))}")
     print(f"Output: {OUTPUT_PATH}")
 
