@@ -332,8 +332,11 @@ Build training pairs from the synthesized data. Kept as a separate script from `
 - **Dataset A — Melody Extraction:** `[Pseudo Piano Solo] ➔ [Violin Melody]`
 - **Dataset B — Auto-Orchestration:** `[Pseudo Piano Solo] ➔ [Original Duet (Violin + Piano)]`
 - Reuse the 4–8-bar sliding-window segmentation from Phase 1.2 (the alignment is exact here, so no key/time/density compatibility filter is needed).
-- Output: `data/pairs_duet.jsonl` with each segment tagged by which task (A or B) it belongs to.
-- **Status:** TODO
+- Pseudo Piano Solo synthesis: onset-aligned chord merge — for each piano-R event window, fold any violin pitches sounding during that window in as additional chord notes (deduplicated). Piano's rhythm is the master clock; rests in piano R get upgraded to notes if violin is sounding. Bars containing `<voice>` markers (multi-voice within one hand) keep the piano R unchanged, since onset math is ambiguous across concurrent voices.
+- Dataset B target encodes the duet as a single token stream delimited by `<track_violin>` and `<track_piano>` (the same delimiters Phase 6.3 will add to the vocabulary).
+- Output: `Phase06/pairs_duet.jsonl` with each segment tagged by which task (A or B) it belongs to.
+- **Actual results (run 2026-05-23):** 73,366 Dataset A + 73,366 Dataset B = 146,732 segments from 1,733 / 1,735 scores (99.9%). 13,910 bars (≈9.2% of total) had multi-voice blocks and kept original piano R unchanged — those bars' Dataset A loses some violin signal, Dataset B unaffected. 2 scores skipped (< 4 bars). Zero merge / load errors. Total examples exceed the paper's 130,930 reference.
+- **Status:** DONE. Code: `Phase06/build_pairs_duet.py`. Output: `Phase06/pairs_duet.jsonl`.
 
 **[6.3] Vocabulary & Model Update (`build_vocab.py`, `model.py`)**
 
