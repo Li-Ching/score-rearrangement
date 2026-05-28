@@ -127,74 +127,26 @@ def max_chord_size(tokens):
 
 def assign_level(bars):
     """
-    Assign difficulty level Lv.1-4 using three combined metrics.
-
-    The original polyphony-only definition (paper Section 4.1) works well for
-    commercial pop piano scores but breaks down on PDMX, where the vast majority
-    of scores are simple arrangements with polyphony <= 1.  We therefore use
-    three complementary metrics and take the MAXIMUM level across all three,
-    so a score is rated hard if it is hard in ANY dimension.
-
-    Metrics (same as paper Section 5.1.1 evaluation metrics):
-      note_density  : average notes per bar (both hands combined)
-      pitch_width   : semitone range across entire score
-      polyphony     : max simultaneous notes per hand (original metric, retained)
-
-    Thresholds calibrated for PDMX piano scores:
-      Lv.1 : simple melody, small range, sparse
-      Lv.2 : moderate complexity
-      Lv.3 : denser, wider range
-      Lv.4 : complex, wide range, many notes
+    Assign difficulty level Lv.1-4 based on max polyphony per hand across all bars.
+    Matches the paper's definition (Section 4.1):
+      Lv.1 Beginner:      max poly <= 1 (one note per hand)
+      Lv.2 Elementary:    max poly <= 2 (up to two simultaneous notes)
+      Lv.3 Intermediate:  max poly <= 3 (up to three simultaneous notes)
+      Lv.4 Advanced:      max poly >  3 (no restriction)
     """
-    from fractions import Fraction
-
-    # ── polyphony (original metric) ───────────────────────────────────────
     max_r, max_l = 0, 0
     for bar in bars:
         max_r = max(max_r, max_chord_size(get_hand_tokens(bar, 'R')))
         max_l = max(max_l, max_chord_size(get_hand_tokens(bar, 'L')))
     poly = max(max_r, max_l)
-
-    # ── note density ──────────────────────────────────────────────────────
-    density = note_density(bars)
-
-    # ── pitch width ───────────────────────────────────────────────────────
-    pitches = []
-    for bar in bars:
-        for tok in bar:
-            midi = pitch_token_to_midi(tok)
-            if midi is not None:
-                pitches.append(midi)
-    width = (max(pitches) - min(pitches)) if len(pitches) >= 2 else 0
-
-    # ── per-metric level ──────────────────────────────────────────────────
-    def poly_level(p):
-        if p <= 1: return 1
-        if p <= 2: return 2
-        if p <= 3: return 3
-        return 4
-
-    def density_level(d):
-        # thresholds based on actual PDMX quartiles (p25=8.4, p50=10.9, p75=14.0)
-        if d <= 8.4:  return 1
-        if d <= 10.9: return 2
-        if d <= 14.0: return 3
-        return 4
-
-    def width_level(w):
-        # thresholds based on actual PDMX quartiles (p25=16, p50=19, p75=24)
-        if w <= 16: return 1
-        if w <= 19: return 2
-        if w <= 24: return 3
-        return 4
-
-    # Use median of three metrics instead of max().
-    # max() causes a single high-range score to dominate regardless of density/poly.
-    # Median is more robust: a score must be hard in at least 2 of 3 dimensions
-    # to be rated hard overall.
-    levels = sorted([poly_level(poly), density_level(density), width_level(width)])
-    level  = levels[1]   # median of three values
-    return f'Lv.{level}'
+    if poly <= 1:
+        return 'Lv.1'
+    elif poly <= 2:
+        return 'Lv.2'
+    elif poly <= 3:
+        return 'Lv.3'
+    else:
+        return 'Lv.4'
 
 
 def get_key(bars):
@@ -267,12 +219,10 @@ def pairs_are_compatible(bars_a, bars_b):
     if key_a is not None and key_b is not None and key_a != key_b:
         return False
 
-    # 2. Time signature
     time_a, time_b = get_time(bars_a), get_time(bars_b)
     if time_a is not None and time_b is not None and time_a != time_b:
         return False
 
-    # 3. Note density ratio
     d_a, d_b = note_density(bars_a), note_density(bars_b)
     if d_a > 0 and d_b > 0:
         ratio = max(d_a, d_b) / min(d_a, d_b)
@@ -285,60 +235,6 @@ def pairs_are_compatible(bars_a, bars_b):
     return True
 
 
-def ensure_segment_clefs(bars):
-    """
-    Ensure the first bar of a segment has clef tokens for R and L staves.
-
-    When build_pairs.py cuts a score into 4-8 bar segments using a sliding
-    window, most segments start mid-score where there are no clef tokens
-    (MusicXML only writes clefs when they change, so only the first bar of
-    the whole score has them).
-
-    Without clef tokens, tokens_to_score() has no information about which
-    staff each hand belongs to, causing the model to learn wrong clef
-    associations.
-
-    Strategy:
-      1. Search the whole segment for any existing clef tokens.
-      2. If the first bar is missing a clef, inject the found clef
-         (or the default: clef_treble for R, clef_bass for L).
-
-    This modifies bars in-place and returns the same list.
-    """
-    # Search entire segment for clef tokens (in case they appear later)
-    found_treble = None
-    found_bass   = None
-    for bar in bars:
-        for tok in bar:
-            if tok == 'clef_treble' and found_treble is None:
-                found_treble = tok
-            if tok == 'clef_bass' and found_bass is None:
-                found_bass = tok
-        if found_treble and found_bass:
-            break
-
-    # Inject into first bar if missing
-    first_bar = bars[0]
-
-    if 'R' in first_bar:
-        r_idx    = first_bar.index('R')
-        l_idx    = first_bar.index('L') if 'L' in first_bar else len(first_bar)
-        r_section = first_bar[r_idx + 1: l_idx]
-        if not any(t == 'clef_treble' for t in r_section):
-            first_bar.insert(r_idx + 1, found_treble or 'clef_treble')
-            # recalculate l_idx after insertion
-            if 'L' in first_bar:
-                l_idx = first_bar.index('L')
-
-    if 'L' in first_bar:
-        l_idx    = first_bar.index('L')
-        l_section = first_bar[l_idx + 1:]
-        if not any(t == 'clef_bass' for t in l_section):
-            first_bar.insert(l_idx + 1, found_bass or 'clef_bass')
-
-    return bars
-
-
 def generate_segments(src_bars, tgt_bars, src_level, tgt_level, song, src_path, tgt_path):
     """
     Generate overlapping segment pairs using a sliding window (stride = SEG_STRIDE).
@@ -349,12 +245,10 @@ def generate_segments(src_bars, tgt_bars, src_level, tgt_level, song, src_path, 
     segments = []
     i = 0
     while i + SEG_MIN <= n:
-        seg_len  = random.randint(SEG_MIN, min(SEG_MAX, n - i))
-        src_seg  = ensure_segment_clefs([bar[:] for bar in src_bars[i:i + seg_len]])
-        tgt_seg  = ensure_segment_clefs([bar[:] for bar in tgt_bars[i:i + seg_len]])
+        seg_len = random.randint(SEG_MIN, min(SEG_MAX, n - i))
         segments.append({
-            'src_tokens': bars_to_tokens(src_seg),
-            'tgt_tokens': bars_to_tokens(tgt_seg),
+            'src_tokens': bars_to_tokens(src_bars[i:i + seg_len]),
+            'tgt_tokens': bars_to_tokens(tgt_bars[i:i + seg_len]),
             'src_level':  src_level,
             'tgt_level':  tgt_level,
             'song':       song,
@@ -393,7 +287,6 @@ def main():
     skipped_same_lv   = 0
     skipped_bars      = 0
     skipped_compat    = 0
-    skipped_skyline   = 0
     level_counts      = defaultdict(int)
 
     with open(OUTPUT_PATH, 'w') as out:
@@ -410,8 +303,7 @@ def main():
                     if len(bars) < SEG_MIN:
                         continue
                     level = assign_level(bars)
-                    sky   = melody_skyline(bars)
-                    scored.append((path, level, bars, sky))
+                    scored.append((path, level, bars))
                     level_counts[level] += 1
                 except Exception:
                     continue

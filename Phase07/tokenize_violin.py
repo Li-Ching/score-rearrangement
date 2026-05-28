@@ -2,10 +2,10 @@ import os, json, csv, warnings
 from music21 import musicxml
 warnings.filterwarnings("ignore", category=musicxml.xmlToM21.MusicXMLWarning)
 
-from score_to_tokens import ViolinXML_to_tokens
+from ..score_to_tokens import ViolinXML_to_tokens
 
-csv_path   = "./PDMX.csv"
-mxl_root   = "./mxl"
+csv_path   = "../PDMX.csv"
+mxl_root   = "../mxl"
 output_dir = "./violin_tokens"
 os.makedirs(output_dir, exist_ok=True)
 

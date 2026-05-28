@@ -20,7 +20,6 @@ Pipeline:
        ↓ strip Dtgt token         remove conditioning prefix from output
        ↓ validate every bar       fall back to source if any bar is malformed
        ↓ concatenate segments     stitch all segments back together
-       ↓ ensure_clefs()           inject clef_treble/clef_bass if missing
        ↓ tokens_to_score()        detokenize to music21 Score
     Output MXL
 """
@@ -215,7 +214,7 @@ def main():
 
     # ── model ─────────────────────────────────────────────────────────────
     print(f'Loading checkpoint: {args.checkpoint}')
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    ckpt = torch.load(args.checkpoint, map_location=device)
     model = build_model(vocab_size, pad_id).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
@@ -273,7 +272,7 @@ def main():
 
         decoded_tokens = ids_to_tokens(decoded_ids, id_to_token)
 
-        # strip forced Dtgt prefix
+        # init_token_idx forces Dtgt as the first output — strip it before stitching
         if decoded_tokens and decoded_tokens[0] == tgt_level:
             decoded_tokens = decoded_tokens[1:]
 
@@ -297,12 +296,8 @@ def main():
         print('Error: model produced no output tokens.', file=sys.stderr)
         sys.exit(1)
 
-    # ── post-process: ensure clef tokens are present in every bar ─────────
-    print(f'\nPost-processing: ensuring clef tokens...')
-    all_output_tokens = ensure_clefs(all_output_tokens)
-
     # ── detokenize & write output ─────────────────────────────────────────
-    print(f'Detokenizing {len(all_output_tokens)} tokens...')
+    print(f'\nDetokenizing {len(all_output_tokens)} tokens...')
     try:
         score = tokens_to_score(all_output_tokens)
     except Exception as e:

@@ -4,7 +4,7 @@ from collections import defaultdict
 from fractions import Fraction
 import glob
 
-VIOLIN_TOKENS_DIR = "../violin_tokens"
+VIOLIN_TOKENS_DIR = "./violin_tokens"
 OUTPUT_PATH       = "../data/violin_pairs.jsonl"
 
 SEG_MIN           = 4

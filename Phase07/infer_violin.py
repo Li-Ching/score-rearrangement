@@ -31,8 +31,8 @@ from fractions import Fraction
 import torch
 
 from model_violin import build_model
-from score_to_tokens import ViolinXML_to_tokens
-from tokens_to_score import tokens_to_score
+from ..score_to_tokens import ViolinXML_to_tokens
+from ..tokens_to_score import tokens_to_score
 from build_pairs_violin import split_into_bars, bars_to_tokens, assign_level_violin
 
 

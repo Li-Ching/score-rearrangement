@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from model_violin  import build_model
-from dataset_seq2seq import make_collate_fn, ScorePairDataset
+from ..dataset_seq2seq import make_collate_fn, ScorePairDataset
 
 
 # ---------------------------------------------------------------------------

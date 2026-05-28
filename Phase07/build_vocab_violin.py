@@ -4,7 +4,7 @@ import glob
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PIANO_VOCAB_PATH  = "../data/vocab.json"        # 現有的鋼琴 vocab，只讀不動
-VIOLIN_TOKENS_DIR = "../violin_tokens"           # 小提琴 token 目錄
+VIOLIN_TOKENS_DIR = "./violin_tokens"           # 小提琴 token 目錄
 OUTPUT_PATH       = "../data/vocab_violin.json"  # 新產生的小提琴 vocab
 
 # ── Special tokens ────────────────────────────────────────────────────────────
