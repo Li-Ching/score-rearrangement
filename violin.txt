@@ -1,0 +1,58 @@
+build_pairs_violin.py──────────────────────────────────────────────────
+Loading violin token files and assigning difficulty levels...
+Found 1425 violin token files.
+
+Difficulty distribution:
+  Lv.1 : 129 scores
+  Lv.2 : 495 scores
+  Lv.3 : 404 scores
+  Lv.4 : 392 scores
+  Skipped (too short) : 5
+  Skipped (error)     : 0
+
+Building cross-difficulty pairs...
+  Pairing Lv.1 (129) x Lv.2 (495) ...
+  Pairing Lv.1 (129) x Lv.3 (404) ...
+  Pairing Lv.1 (129) x Lv.4 (392) ...
+  Pairing Lv.2 (495) x Lv.3 (404) ...
+  Pairing Lv.2 (495) x Lv.4 (392) ...
+  Pairing Lv.3 (404) x Lv.4 (392) ...
+
+Done.
+Total training segments              : 3,736
+Total directional pairs              : 272
+Skipped (bar count mismatch >10%)    : 1,427
+Skipped (note density ratio >3.0) : 12
+Output: ./data/violin_pairs.jsonl
+
+build_vocab_violin.py──────────────────────────────────────────────────
+Loading piano vocab from './data/vocab.json' ...
+  Piano vocab size     : 2346
+  Piano corpus tokens  : 2338
+
+Scanning violin tokens from './violin_tokens' ...
+  Found 1425 violin token files
+  Scanned 500/1425 files ...
+  Scanned 1000/1425 files ...
+  Violin corpus tokens : 270
+  Failed               : 0
+
+New tokens not in piano vocab: 2
+  ['len_131/120', 'time_24/1']
+
+Final vocab_violin size: 2350 tokens
+  (piano vocab was 2346, added 4 tokens)
+Saved to './data/vocab_violin.json'
+(Piano vocab './data/vocab.json' is unchanged)
+
+── Sanity check ──────────────────────────────────────────────────
+  '<pad>'      → id 0
+  '<sos>'      → id 1
+  '<eos>'      → id 2
+  '<unk>'      → id 3
+  'Lv.1'       → id 4
+  'Lv.2'       → id 5
+  'Lv.3'       → id 6
+  'Lv.4'       → id 7
+  'piano'      → id 8
+  'violin'     → id 9

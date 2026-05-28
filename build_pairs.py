@@ -2,9 +2,9 @@ import os, json, csv, random
 from itertools import combinations
 from collections import defaultdict
 
-CSV_PATH    = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\PDMX.csv"
-TOKENS_DIR  = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\tokens"
-OUTPUT_PATH = r"C:\Users\VIPLAB\Desktop\Yan\score-rearrangement\data\pairs.jsonl"
+CSV_PATH    = r".\PDMX.csv"
+TOKENS_DIR  = r".\tokens"
+OUTPUT_PATH = r".\data\pairs.jsonl"
 
 SEG_MIN           = 4    # min bars per segment
 SEG_MAX           = 8    # max bars per segment
@@ -279,6 +279,60 @@ def pairs_are_compatible(bars_a, bars_b, sky_a, sky_b):
     return True
 
 
+def ensure_segment_clefs(bars):
+    """
+    Ensure the first bar of a segment has clef tokens for R and L staves.
+
+    When build_pairs.py cuts a score into 4-8 bar segments using a sliding
+    window, most segments start mid-score where there are no clef tokens
+    (MusicXML only writes clefs when they change, so only the first bar of
+    the whole score has them).
+
+    Without clef tokens, tokens_to_score() has no information about which
+    staff each hand belongs to, causing the model to learn wrong clef
+    associations.
+
+    Strategy:
+      1. Search the whole segment for any existing clef tokens.
+      2. If the first bar is missing a clef, inject the found clef
+         (or the default: clef_treble for R, clef_bass for L).
+
+    This modifies bars in-place and returns the same list.
+    """
+    # Search entire segment for clef tokens (in case they appear later)
+    found_treble = None
+    found_bass   = None
+    for bar in bars:
+        for tok in bar:
+            if tok == 'clef_treble' and found_treble is None:
+                found_treble = tok
+            if tok == 'clef_bass' and found_bass is None:
+                found_bass = tok
+        if found_treble and found_bass:
+            break
+
+    # Inject into first bar if missing
+    first_bar = bars[0]
+
+    if 'R' in first_bar:
+        r_idx    = first_bar.index('R')
+        l_idx    = first_bar.index('L') if 'L' in first_bar else len(first_bar)
+        r_section = first_bar[r_idx + 1: l_idx]
+        if not any(t == 'clef_treble' for t in r_section):
+            first_bar.insert(r_idx + 1, found_treble or 'clef_treble')
+            # recalculate l_idx after insertion
+            if 'L' in first_bar:
+                l_idx = first_bar.index('L')
+
+    if 'L' in first_bar:
+        l_idx    = first_bar.index('L')
+        l_section = first_bar[l_idx + 1:]
+        if not any(t == 'clef_bass' for t in l_section):
+            first_bar.insert(l_idx + 1, found_bass or 'clef_bass')
+
+    return bars
+
+
 def generate_segments(src_bars, tgt_bars, src_level, tgt_level, song, src_path, tgt_path):
     """
     Generate overlapping segment pairs using a sliding window (stride = SEG_STRIDE).
@@ -289,10 +343,12 @@ def generate_segments(src_bars, tgt_bars, src_level, tgt_level, song, src_path, 
     segments = []
     i = 0
     while i + SEG_MIN <= n:
-        seg_len = random.randint(SEG_MIN, min(SEG_MAX, n - i))
+        seg_len  = random.randint(SEG_MIN, min(SEG_MAX, n - i))
+        src_seg  = ensure_segment_clefs([bar[:] for bar in src_bars[i:i + seg_len]])
+        tgt_seg  = ensure_segment_clefs([bar[:] for bar in tgt_bars[i:i + seg_len]])
         segments.append({
-            'src_tokens': bars_to_tokens(src_bars[i:i + seg_len]),
-            'tgt_tokens': bars_to_tokens(tgt_bars[i:i + seg_len]),
+            'src_tokens': bars_to_tokens(src_seg),
+            'tgt_tokens': bars_to_tokens(tgt_seg),
             'src_level':  src_level,
             'tgt_level':  tgt_level,
             'song':       song,

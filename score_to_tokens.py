@@ -425,3 +425,31 @@ def MusicXML_to_tokens(mxml_path, bar_major=True, note_name=True, tokenize_chord
         tokens += ['L'] + measures_to_tokens(L_part, soup, L_staff, note_name)
 
     return tokens
+
+def ViolinXML_to_tokens(mxml_path, note_name=True):
+    """
+    Tokenize a violin solo (single-staff, monophonic) MusicXML file.
+ 
+    Differences from MusicXML_to_tokens():
+      - Accepts 1-part scores only (raises ValueError otherwise)
+      - No L staff, no clef_bass tokens
+      - No chord symbols (violin is monophonic)
+      - Token structure per bar:
+          bar [shared: key, time, clef] R [note tokens ...]
+ 
+    Returns a flat token list (same format as MusicXML_to_tokens),
+    so build_pairs_violin.py can read it the same way as piano tokens.
+    """
+    parts, soup = load_MusicXML(mxml_path)
+ 
+    if len(parts) == 0:
+        raise ValueError(
+            f"Expected 1 part for violin score, got {len(parts)} in {mxml_path}"
+        )
+ 
+    tokens = []
+    for measure in parts[0]:
+        R = measure_to_tokens(measure, soup, staff=None, note_name=note_name)
+        tokens += ['bar'] + common(R) + ['R'] + others(R)
+ 
+    return tokens

@@ -19,6 +19,7 @@ Pipeline:
        ↓ model.greedy_decode()    autoregressive generation
        ↓ strip Dtgt token         remove conditioning prefix from output
        ↓ concatenate segments     stitch all segments back together
+       ↓ ensure_clefs()           inject clef_treble/clef_bass if missing
        ↓ tokens_to_score()        detokenize to music21 Score
     Output MXL
 """
@@ -61,6 +62,60 @@ def encode_segment(bar_tokens, src_level, tgt_level, token_to_id, eos_id):
 def ids_to_tokens(id_list, id_to_token):
     """Convert a list of integer token IDs to token strings."""
     return [id_to_token[i] for i in id_list if i in id_to_token]
+
+
+def ensure_clefs(tokens):
+    """
+    Post-processing: ensure the FIRST bar has correct clef tokens.
+
+    MusicXML only writes clef tokens when they change, so usually only
+    the first bar has them. The model often omits even that.
+    tokens_to_score() carries the last-seen clef forward, so we only
+    need to inject clef_treble (R) and clef_bass (L) in the first bar.
+    Subsequent bars do NOT get clef tokens injected to avoid rendering
+    a clef symbol at every barline.
+    """
+    result = []
+    i = 0
+    toks = tokens
+    first_bar_done = False
+
+    while i < len(toks):
+        if toks[i] != 'bar':
+            result.append(toks[i])
+            i += 1
+            continue
+
+        # Collect entire bar block
+        bar_block = ['bar']
+        i += 1
+        while i < len(toks) and toks[i] != 'bar':
+            bar_block.append(toks[i])
+            i += 1
+
+        # Only inject clefs in the first bar
+        if not first_bar_done:
+            # R section: inject clef_treble after R if missing
+            if 'R' in bar_block:
+                r_idx = bar_block.index('R')
+                l_idx = bar_block.index('L') if 'L' in bar_block else len(bar_block)
+                r_section = bar_block[r_idx + 1: l_idx]
+                if not any(t == 'clef_treble' for t in r_section):
+                    bar_block.insert(r_idx + 1, 'clef_treble')
+                    l_idx = bar_block.index('L') if 'L' in bar_block else len(bar_block)
+
+            # L section: inject clef_bass after L if missing
+            if 'L' in bar_block:
+                l_idx = bar_block.index('L')
+                l_section = bar_block[l_idx + 1:]
+                if not any(t == 'clef_bass' for t in l_section):
+                    bar_block.insert(l_idx + 1, 'clef_bass')
+
+            first_bar_done = True
+
+        result.extend(bar_block)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +198,7 @@ def main():
 
     # ── model ─────────────────────────────────────────────────────────────
     print(f'Loading checkpoint: {args.checkpoint}')
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model = build_model(vocab_size, pad_id).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
@@ -185,21 +240,21 @@ def main():
         seg_tokens = bars_to_tokens(seg_bars)
 
         src_ids    = encode_segment(seg_tokens, src_level, tgt_level, token_to_id, eos_id)
-        src_tensor = torch.tensor([src_ids], dtype=torch.long, device=device)  # (1, src_len)
+        src_tensor = torch.tensor([src_ids], dtype=torch.long, device=device)
 
         decoded_ids = model.greedy_decode(
             src_tensor,
             sos_id,
             eos_id,
             max_len=args.max_decode_len,
-            init_token_idx=token_to_id[tgt_level],  # force Dtgt as first output token
+            init_token_idx=token_to_id[tgt_level],
             temperature=args.temperature,
             top_k=args.top_k,
-        )[0]  # batch of 1 → take first item
+        )[0]
 
         decoded_tokens = ids_to_tokens(decoded_ids, id_to_token)
 
-        # init_token_idx forces Dtgt as the first output — strip it before stitching
+        # strip forced Dtgt prefix
         if decoded_tokens and decoded_tokens[0] == tgt_level:
             decoded_tokens = decoded_tokens[1:]
 
@@ -212,8 +267,12 @@ def main():
         print('Error: model produced no output tokens.', file=sys.stderr)
         sys.exit(1)
 
+    # ── post-process: ensure clef tokens are present in every bar ─────────
+    print(f'\nPost-processing: ensuring clef tokens...')
+    all_output_tokens = ensure_clefs(all_output_tokens)
+
     # ── detokenize & write output ─────────────────────────────────────────
-    print(f'\nDetokenizing {len(all_output_tokens)} tokens...')
+    print(f'Detokenizing {len(all_output_tokens)} tokens...')
     try:
         score = tokens_to_score(all_output_tokens)
     except Exception as e:
